@@ -15,9 +15,12 @@ From UZI by Doug Braun and UZI280 by Stefan Nitschke.
 /* Import the CPU types before the config.h as config.h wants to use types */
 #include "types.h"
 #include "config.h"
+#include "exec.h"
+
 #include "cpu.h"
 
 #include "panic.h"
+
 
 #ifndef NULL
 #define NULL (void *)0
@@ -78,24 +81,6 @@ From UZI by Doug Braun and UZI280 by Stefan Nitschke.
 #define dump_core(sig)	sig
 #define in_group(x)	0
 #endif
-
-/* CPU families */
-#define CPUTYPE_Z80	0
-#define CPUTYPE_6809	1
-#define CPUTYPE_6502	2
-#define CPUTYPE_68000	3
-#define CPUTYPE_PDP11	4
-#define CPUTYPE_MSP430	5
-#define CPUTYPE_68HC11	6
-#define CPUTYPE_8086	7
-#define CPUTYPE_65C816	8
-#define CPUTYPE_R2K	9
-#define CPUTYPE_Z280	10
-#define CPUTYPE_8080	11
-#define CPUTYPE_8085	12
-#define CPUTYPE_EZ80	13
-#define CPUTYPE_NS32K	14
-#define CPUTYPE_TMS9900 15
 
 /* Maximum UFTSIZE can be is 16, then you need to alter the O_CLOEXEC code */
 
@@ -390,6 +375,7 @@ struct mount {
 };
 #define MS_RDONLY	1
 #define MS_NOSUID	2	/* Not yet implemented */
+#define MS_NOEXEC	4	/* Not yet implemented */
 #define MS_REMOUNT	128
 
 /* Process table p_status values */
@@ -1078,9 +1064,15 @@ extern void copy_common(uint8_t page);
 extern void pagemap_add(uint8_t page);	/* FIXME: may need a page type for big boxes */
 extern void pagemap_free(ptptr p);
 extern int pagemap_alloc(ptptr p);
-extern int pagemap_realloc(usize_t c, usize_t d, usize_t s);
+extern int pagemap_prepare(struct exec *hdr);
+extern int pagemap_realloc(struct exec *hdr, usize_t m);
 extern usize_t pagemap_mem_used(void);
 extern void map_init(void);
+extern void set_cpu_type(void);
+
+/* Executable header checks and stubs */
+extern uint8_t sys_cpu, sys_cpu_feat;
+extern uint8_t sys_stubs[];
 
 /* Platform interfaces */
 
@@ -1151,7 +1143,7 @@ extern arg_t _getpid(void);       /* FUZIX system call 18 */
 extern arg_t _getppid(void);      /* FUZIX system call 19 */
 extern arg_t _getuid(void);       /* FUZIX system call 20 */
 extern arg_t _umask(void);        /* FUZIX system call 21 */
-extern arg_t _getfsys(void);      /* FUZIX system call 22 */
+extern arg_t _statfs(void);       /* FUZIX system call 22 */
 extern arg_t _execve(void);       /* FUZIX system call 23 */
 extern arg_t _getdirent(void);    /* FUZIX system call 24 */
 extern arg_t _setuid(void);       /* FUZIX system call 25 */

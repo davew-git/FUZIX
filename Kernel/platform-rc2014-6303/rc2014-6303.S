@@ -6,6 +6,7 @@
             .export init_hardware
             .export _program_vectors
 	    .export map_kernel
+	    .export map_kernel_di
 	    .export map_process
 	    .export map_process_always
 	    .export map_save_kernel
@@ -21,24 +22,25 @@
 
 #include "kernel.def"
 #include "../kernel-6303.def"
-#include "zeropage-6303.inc"
 
 ; -----------------------------------------------------------------------------
 ; COMMON MEMORY BANK (0x0200 upwards after the common data blocks)
 ; -----------------------------------------------------------------------------
-            .segment "COMMONMEM"
+
+	    .common
 
 _platform_monitor:
 _platform_reboot:
-	    clr 0xFE7B		; top 16K to ROM 0
-	    jmp ($FFFC)		; check vector FIXME
+	    jsr map_kernel
+	    jmp rebootit
 
 ___hard_di:
 	    tpa
+	    tab
 	    sei			; Save old state in return to C
 	    rts
 ___hard_ei:
-	    cli			; on 6502 cli enables IRQs!!!
+	    cli			; on 680x cli enables IRQs!!!
 	    rts
 
 ___hard_irqrestore:
@@ -57,13 +59,12 @@ irq_on:
 ; -----------------------------------------------------------------------------
             .code
 
+rebootit:
+	    clr $FE7B		; top 16K to ROM 0
+	    ldx $FFFE		; restart vector
+	    jmp ,x		; and go
+
 init_early:
-	    ; Hack for now - create a common copy for init. We should then
-	    ; recycle page 32 into a final process but that means awkward
-	    ; handling - or does it - we wrap the bit ?? FIXME
-	    jsr _create_init_common
-	    ldab #36
-	    stab 0xFE78		; set low page to copy
             rts			; stack was copied so this is ok
 
 init_hardware:
@@ -71,13 +72,13 @@ init_hardware:
 	    ldd #512
 	    std _ramsize
 	    ldd #448
-	    sta _procmem
+	    std _procmem
             jmp program_vectors_k
 
 ;------------------------------------------------------------------------------
 ; COMMON MEMORY PROCEDURES FOLLOW
 
-            .segment "COMMONMEM"
+            .common
 
 _program_vectors:
             ; we are called, with interrupts disabled, by both newproc() and crt0
@@ -88,18 +89,29 @@ _program_vectors:
 	    ; just pass it on
 	    jsr map_process
 program_vectors_k:
-	    ldd #_interrupt_handler
-	    std 0xFFFE		; FIXME: correct vectors
+	    ldd #interrupt_handler
+	    std 0xFFF2		; timer overflow
+	    std 0xFFF0		; serial interrupt
+	    std 0xFFF8		; external int
+	    ldd #nullirq
+	    std 0xFFF4		; OCF
+	    std 0xFFF6		; ICF
 	    ldd #nmi_handler
-	    std 0xFFFA		; Ditto
-	    ldd #syscall_entry
-	    std 0xFFFC		; Ditto
+	    std 0xFFFC		; NMI vector
+	    ldd #unix_syscall_entry
+	    std 0xFFFA		; SWI vector
+	    ldd #trap_handler
+	    std 0xFFEE		; 6303 TRAP (usually executing 0 but also
+				; illegals)
 	    jmp map_kernel
+
+nullirq:
+	    rti
 
 map_process_always:
 	    pshb
-	    ldab _udata + U_DATA__U_PAGE
-	    jsr map_bank_i
+	    ldab _udata + U_DATA__U_PAGE+1	; big endian
+	    jsr map_bank
 	    pulb
 	    rts
 ;
@@ -115,39 +127,34 @@ map_process:
 ;	something (that would also let us put RODATA in
 ;	common area just to balance out memory usages).
 ;
+map_kernel_di:
 map_kernel:
 	    pshb
-				; Common is left untouched as is ZP and S
+				; Common is left untouched
 	    ldab #$20		; Kernel RAM
-	    jsr map_bank_i
+	    jsr map_bank
 	    pulb
 	    rts
 
 ;
-;	Entry point to map a linear bank range. We switch 4000-BFFF
-;	C000-FFFF are constant, 0000-3FFF are switched on the task switch
-;	so are valid for map_process_always cases but not mapping an
-;	arbitrary process. This is ok - when we add swap it uses
-;	map_for_swap and that will map a 16K window in and out (which will
-;	need us to fix save/restore)
-;
-;	FIXME: correct for actual 6303 memory map we use and for 16K x 4
-;	bank logic ?
+;	For now we are using the 4x16K MMU but this will probably change.
+;	Switch the low 48K, the task switch flips the top. Hack until we
+;	enable the real MMU and banking setup.
 ;
 map_bank:
 	    stab 0xFE78
-map_bank_i:			; We are not mapping the first user page yet
 	    stab cur_map
 	    addb #1
 	    stab 0xFE79
 	    addb #1
 	    stab 0xFE7A
+	    ; And don't swap the common here but in the task switch
 	    rts
 
 ; X holds the map table of this process
 map_process_2:
-	    ldab 0,x
-	    jmp map_bank_i
+	    ldab 1,x		; Big endian
+	    jmp map_bank
 
 
 ;
@@ -159,7 +166,7 @@ map_process_2:
 map_restore:
 	    pshb
 	    ldab saved_map	; First bank we skip half of
-	    jsr map_bank_i
+	    jsr map_bank
 	    pulb
 	    rts
 
@@ -182,23 +189,25 @@ saved_map:  .byte 0
 ; corrupting other registers
 
 outchar:
-	    pha
+	    psha
 outcharw:
-	    lda $FEC5
-	    and #$20
+	    ldaa $11
+	    anda #$20
 	    beq outcharw
-	    pla
-	    sta $FEC0
+	    pula
+	    staa $13
 	    rts
 
 ;
 ;	Disk copier (needs to be in common), call with ints off
 ;	for now
 ;
-;	AX = ptr, length always 512, src and page in globals
+;	TOS = ptr, length always 512, src and page in globals
 ;
 
-	.export _hd_read_data,_hd_write_data,_hd_map
+	.export _hd_read_data
+	.export _hd_write_data
+	.export _hd_map
 
 _hd_read_data:
 	tsx
@@ -250,8 +259,6 @@ hd_write256:
 	addb #1
 	bne hd_write256
 	rts
-
-;FIXME linker	.segment "COMMONDATA"
 
 _hd_map:
 	.byte 0

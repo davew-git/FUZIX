@@ -8,9 +8,6 @@ extern void *memset(void *, int, size_t);
 extern int memcmp(const void *, const void *, size_t);
 extern size_t strlen(const char *);
 
-#define EMAGIC    0x4C    /* Header of executable (JMP) */
-#define EMAGIC_2  0x38	  /* SEC BCS foo */
-
 #define brk_limit() ((udata.u_syscall_sp) - 512)
 
 #define staticfast
@@ -56,8 +53,6 @@ register struct u_data *udata_ptr asm ("a5");
 #define BIG_ENDIAN
 
 #define CONFIG_STACKSIZE	1024
-
-#define CPUTYPE	CPUTYPE_68000
 
 #define __packed		__attribute__((packed))
 #define barrier()		asm volatile("":::"memory")

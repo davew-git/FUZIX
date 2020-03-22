@@ -1,10 +1,10 @@
+#include <types.h>
+
 #define uputp  uputw			/* Copy user pointer type */
 #define ugetp  ugetw			/* between user and kernel */
 #define uputi  uputw			/* Copy user int type */
 #define ugeti  ugetw			/* between user and kernel */
 
-#define EMAGIC    0x7E    /* Header of executable  (JMP) */
-#define EMAGIC_2  0x20    /* BRA */
 /* Allow a minimum of 512 bytes gap between stack and top of allocations */
 #define brk_limit() (udata.u_syscall_sp - 512)
 
@@ -50,9 +50,8 @@ typedef union {            /* this structure is endian dependent */
 
 #define BIG_ENDIAN
 
-#define CPUTYPE	CPUTYPE_6303
-
 #define __packed
 #define barrier()
 
 #define __fastcall
+#define inline

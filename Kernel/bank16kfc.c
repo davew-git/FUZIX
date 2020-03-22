@@ -22,6 +22,7 @@
 #include <kernel.h>
 #include <kdata.h>
 #include <printf.h>
+#include <exec.h>
 
 #undef DEBUG
 
@@ -109,7 +110,7 @@ int pagemap_alloc(ptptr p)
  *
  *	FIXME: review swap case and ENOMEM
  */
-int pagemap_realloc(usize_t code, usize_t size, usize_t stack)
+int pagemap_realloc(struct exec *hdr, usize_t size)
 {
 	int8_t have = maps_needed(udata.u_top);
 	int8_t want = maps_needed(size + MAPBASE);
@@ -170,6 +171,18 @@ int pagemap_realloc(usize_t code, usize_t size, usize_t stack)
 	if (update)
 		program_vectors(&udata.u_page);
 	__hard_irqrestore(irq);
+	return 0;
+}
+
+int pagemap_prepare(struct exec *hdr)
+{
+	/* If it is relocatable load it at PROGLOAD */
+	if (hdr->a_base == 0)
+		hdr->a_base = PROGLOAD >> 8;
+	/* If it doesn't care about the size then the size is all the
+	   space we have */
+	if (hdr->a_size == 0)
+		hdr->a_size = (ramtop >> 8) - hdr->a_base;
 	return 0;
 }
 

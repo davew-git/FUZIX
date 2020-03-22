@@ -50,6 +50,10 @@
 	.globl _out
 	.globl _in16
 	.globl _out16
+	.globl _sys_cpu
+	.globl _sys_cpu_feat
+	.globl _sys_stubs
+	.globl _set_cpu_type
 
         ; imported symbols
 	.globl _chksigs
@@ -115,8 +119,8 @@ deliver_signals_2:
 	ld bc, #signal_return
 	push bc		; bc is passed in as the return vector
 
-	ex de, hl
 	ei
+	ld hl,(PROGLOAD+16)
 	jp (hl)		; return to user space. This will then return via
 			; the return path handler passed in BC
 
@@ -728,7 +732,6 @@ ___hard_irqrestore:
 	.area _COMMONMEM
 
 	.globl ___sdcc_enter_ix
-	.globl ___sdcc_enter_ix_n
 
 ___sdcc_enter_ix:
 	pop hl		; return address
@@ -736,23 +739,6 @@ ___sdcc_enter_ix:
 	ld ix, #0
 	add ix, sp	; set ix to the stack frame
 	jp (hl)		; and return
-
-;
-; Not used unless experimentally patched sdcc
-;
-___sdcc_enter_ix_n:
-	pop hl		; return address
-	push ix		; save frame pointer
-	ld ix, #0
-	add ix, sp	; frame pointer
-	ld e, (hl)	; size byte
-	ld d, #0xFF	; always minus something..
-	inc hl
-	ex de, hl
-	add hl, sp
-	ld sp, hl
-	push de
-	ret
 
 ;
 ;	This must be in common in banked builds
@@ -1342,3 +1328,41 @@ memmove_up:
 	pop	hl
 	ret
 
+	.area _CONST
+
+_sys_stubs:
+	jp unix_syscall_entry
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+
+	.area _DATA
+
+_sys_cpu:
+	.db 0
+_sys_cpu_feat:
+	.db 0
+
+	.area _DISCARD
+
+_set_cpu_type:
+	ld h,#2		; Assume Z80
+	xor a
+	dec a
+	daa
+	jr c,is_z80
+	ld h,#6		; Nope Z180
+is_z80:
+	ld l,#1		; 8080 family
+	ld (_sys_cpu),hl	; Write cpu and cpu feat
+	ret

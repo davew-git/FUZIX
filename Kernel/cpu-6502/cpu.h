@@ -8,12 +8,6 @@ extern void * __fastcall__ memcpy(void *, void *, size_t);
 extern void * __fastcall__ memset(void *, int, size_t);
 extern size_t __fastcall__ strlen(const char *);
 
-#define EMAGIC    0x4C    /* Header of executable (JMP) */
-#define EMAGIC_2  0x38	  /* SEC BCS foo */
-/* We use SEC BCS not CLC BCC because CLC is 0x18 which is the Z80 JR header
-   so the two would be identical - not good! */
-
-
 /* High byte is saved, low byte is a mystery so take worst case. Also allow
    a bit less as C stack is not return stack */
 #define brk_limit() ((((uint16_t)udata.u_syscall_sp) | 0xFF) - 384)
@@ -48,8 +42,6 @@ typedef union {            /* this structure is endian dependent */
 #define inline
 
 #define ntohs(x)	((((x) & 0xFF) << 8) | (((x) & 0xFF00) >> 8))
-
-#define CPUTYPE	CPUTYPE_6502
 
 /* cc65 really wants register tags on struct pointers used repeatedly */
 #define regptr	register

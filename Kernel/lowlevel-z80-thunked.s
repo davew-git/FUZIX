@@ -49,6 +49,10 @@
 	.globl _in
 	.globl _out16
 	.globl _in16
+	.globl _sys_cpu
+	.globl _sys_cpu_feat
+	.globl _sys_stubs
+	.globl _set_cpu_type
 
         ; imported symbols
 	.globl _chksigs
@@ -250,7 +254,7 @@ interrupt_sig:
 	ld e,a
 	xor a
 	ld (_int_disabled),a
-	ld e,a
+	ld d,a
 	ld c,a
 	ld (_udata + U_DATA__U_CURSIG),a
 	ld hl,#_udata + U_DATA__U_SIGVEC
@@ -475,4 +479,43 @@ ___hard_irqrestore:
 	or a
 	ret nz
 	ei
+	ret
+
+	.area _CONST
+
+_sys_stubs:
+	jp unix_syscall_entry
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+
+	.area _DATA
+
+_sys_cpu:
+	.db 0
+_sys_cpu_feat:
+	.db 0
+
+	.area _DISCARD
+
+_set_cpu_type:
+	ld h,#2		; Assume Z80
+	xor a
+	dec a
+	daa
+	jr c,is_z80
+	ld h,#6		; Nope Z180
+is_z80:
+	ld l,#1		; 8080 family
+	ld (_sys_cpu),hl	; Write cpu and cpu feat
 	ret

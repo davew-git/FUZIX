@@ -298,6 +298,7 @@ uint16_t get_root_dev(void)
 		udata.u_done = 0;
 
 		cdread(TTYDEV, O_RDONLY);	/* read root filesystem name from tty */
+		bootline[udata.u_done] = 0;
 		rd = bootdevice(bootline);
 	}
 
@@ -353,8 +354,12 @@ void fuzix_main(void)
 			"Copyright (c) 1988-2002 by H.F.Bower, D.Braun, S.Nitschke, H.Peraza\n"
 			"Copyright (c) 1997-2001 by Arcady Schekochikhin, Adriano C. R. da Cunha\n"
 			"Copyright (c) 2013-2015 Will Sowerbutts <will@sowerbutts.com>\n"
-			"Copyright (c) 2014-2019 Alan Cox <alan@etchedpixels.co.uk>\nDevboot\n",
+			"Copyright (c) 2014-2020 Alan Cox <alan@etchedpixels.co.uk>\nDevboot\n",
 			sysinfo.uname);
+
+	set_cpu_type();
+	sysinfo.cpu[0] = sys_cpu_feat;
+	sysinfo.cputype = sys_cpu;
 	platform_copyright();
 #ifndef SWAPDEV
 #ifdef PROC_SIZE

@@ -8,9 +8,6 @@ typedef uint16_t irqflags_t;
 extern void out(uint8_t addr, uint8_t val);
 extern uint8_t in(uint8_t addr) __z88dk_fastcall;
 
-/* Rabbit binaries start with a JP FIXME: sort this in new binfmt */
-#define EMAGIC    0xc3    /* Header of executable */
-#define EMAGIC_2  0x18	  /* JR */
 /* Allow a minimum of 512 bytes gap between stack and top of allocations */
 #define brk_limit() (udata.u_syscall_sp - 512)
 
@@ -66,8 +63,6 @@ typedef union {            /* this structure is endian dependent */
 #define ntohs(x)	((((x) & 0xFF) << 8) | (((x) & 0xFF00) >> 8))
 #define ntohl(x)	((((x) & 0xFF) << 24) | (((x) & 0xFF00) << 8) | \
                          (((x) & 0xFF0000) >> 8) | (((x >> 24) & 0xFF)))
-
-#define CPUTYPE	CPUTYPE_R2K
 
 /* Deal with SDCC code gen issue */
 #define HIBYTE32(x)	(((uint8_t *)&(x))[3])

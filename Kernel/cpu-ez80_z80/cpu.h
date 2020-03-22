@@ -13,9 +13,6 @@ extern uint8_t in(uint8_t addr) __z88dk_fastcall;
 extern void out16(uint16_t addr, uint16_t val);
 extern uint8_t in16(uint16_t addr) __z88dk_fastcall;
 
-/* Z80 binaries start with a JP */
-#define EMAGIC    0xc3    /* Header of executable */
-#define EMAGIC_2  0x18	  /* JR */
 /* Allow a minimum of 512 bytes gap between stack and top of allocations */
 #define brk_limit() (udata.u_syscall_sp - 512)
 
@@ -64,8 +61,6 @@ typedef union {            /* this structure is endian dependent */
 #define ntohs(x)	((((x) & 0xFF) << 8) | (((x) & 0xFF00) >> 8))
 #define ntohl(x)	((((x) & 0xFF) << 24) | (((x) & 0xFF00) << 8) | \
                          (((x) & 0xFF0000) >> 8) | (((x >> 24) & 0xFF)))
-
-#define CPUTYPE	CPUTYPE_Z80
 
 /* Deal with SDCC code gen issue */
 #define HIBYTE32(x)	(((uint8_t *)&(x))[3])
