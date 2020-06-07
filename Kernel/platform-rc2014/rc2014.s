@@ -46,6 +46,7 @@
 	.globl _ctc_present
 	.globl _sio_present
 	.globl _sio1_present
+	.globl _u16x50_present
 	.globl _z180_present
 	.globl _udata
 
@@ -120,7 +121,7 @@ init_hardware:
 	; This could be the ACIA control port. If so we mash the settings
 	; up but that is ok as we will port them back in the ACIA probe
 	;
-
+	; FIXME: ROMWBW order is different ?
 	;
 	;	Look for an ACIA
 	;
@@ -144,6 +145,37 @@ init_hardware:
 	ld (_acia_present),a
 
 not_acia:
+	; Look for a 16x50 at 0xA0
+	in a,(0xA3)
+	ld e,a
+	or #0x80		; use the DLAB bit to detect
+	ld l,a
+	out (0xA3), a
+	in a,(0xA1)
+	ld d,a			; Remember old speed bits from ROMWBW
+	ld a,#0xAA		; Pick 0xAA as it's a valid pattern for baud
+	out (0xA1), a		; but not for the control register it overlaps
+	in a,(0xA1)
+	cp #0xAA
+	jr nz, not_16x50
+	ld a,e
+	out (0xA3),a
+	in a,(0xA1)
+	cp #0xAA
+	jr z, not_16x50
+	ld a,l
+	out (0xA3),a
+	ld a,d			; put the speed back
+	out (0xA1),a
+	ld a,e
+	out (0xA3),a		; and the other settings
+	ld a,#1
+	ld (_u16x50_present),a
+
+not_16x50:
+	ld a,e
+	out (0xC3),a
+
 	xor a
 	ld c,#SIOA_C
 	out (c),a			; RR0
@@ -194,7 +226,7 @@ not_acia:
 
 
 ;
-;	We have an SIO so do the required SIO hdance
+;	We have an SIO so do the required SIO dance
 ;
 is_sio:	ld a,#1
 	ld (_sio_present),a
@@ -233,14 +265,17 @@ is_sio:	ld a,#1
 	in a,(SIOD_C)			; read it back on the second SIO
 	and #0xF0
 	cp #0xF0
+	; Now put SIOB_C vector back to zero so we don't fight
+	; on the bus. Don't touch flags between here and the jr nz
+	ld a,#2
+	out (SIOB_C),a
+	ld a,#0
+	out (SIOB_C),a
 	jr nz, not_mirrored		; it's not a mirror, might not be an SIO
 
 	; Could be chance or a soft boot
+	; Check if the above clear also affected C/D
 
-	ld a,#2
-	out (SIOB_C),a
-	xor a
-	out (SIOB_C),a
 	ld a,#2
 	out (SIOD_C),a
 	in a,(SIOD_C)
@@ -248,6 +283,12 @@ is_sio:	ld a,#1
 	jr z, serial_up			; It's a mirage
 
 not_mirrored:
+
+	ld a,#2
+	out (SIOD_C),a			; Reprogram vector back to zero
+	xor a
+	out (SIOD_C),a
+
 	ld c,#SIOD_C
 
 	xor a
@@ -616,6 +657,8 @@ map_for_swap:
 
 	.globl __stub_0_1
 	.globl __stub_0_2
+	.globl __stub_1_2
+	.globl __stub_2_1
 
 ;
 ;	We are calling into bank 1 from common. We don't know the current
@@ -691,10 +734,12 @@ __bank_2_1:
 	ld bc,#MAP_BANK2
 	jr banksetbc
 
+__stub_2_1:
 __stub_0_1:
 	ld bc,#MAP_BANK1
 	jr stub_call
 __stub_0_2:
+__stub_1_2:
 	ld bc,#MAP_BANK2
 stub_call:
 	pop hl				; return address

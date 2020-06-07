@@ -50,12 +50,13 @@ extern uint16_t swap_dev;
 #define NBUFS    4        /* Number of block buffers, keep in line with space reserved in zeta-v2.s */
 #define NMOUNTS	 2	  /* Number of mounts at a time */
 
-#define MAX_BLKDEV 4	    /* 1 ROM disk, 1 RAM disk, 1 floppy, 1 IDE */
+#define MAX_BLKDEV 2	    /* 2 IDE */
 
 /* On-board DS1302, we can read the time of day from it */
 #define CONFIG_RTC
 #define CONFIG_RTC_FULL
 #define CONFIG_NO_CLOCK
+#define CONFIG_RTC_INTERVAL 100	/* Expensive to read */
 
 /* IDE/CF support */
 #define CONFIG_IDE

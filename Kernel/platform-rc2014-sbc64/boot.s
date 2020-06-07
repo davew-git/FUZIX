@@ -83,6 +83,7 @@ loader:
 
 	ld hl,#gogogo
 	call outstr
+	xor a
 	jp 0x1000
 
 loading:

@@ -1,6 +1,15 @@
 ;
 ;	6303 version
 ;
+;	We do not save the temporaries. The direct page is tied to each
+;	map so the direct page working registers are also per process. Only
+;	the interrupt path needs to save and restore them.
+;
+;	The only ugly we have is that because we are using the 16Kx4 memory
+;	banking model and our code density isn't quite good enough we need
+;	to switch udata objects on task switches. With the 56K/8K MMU we
+;	could avoid this!
+;
         .export _platform_switchout
         .export _switchin
         .export _dofork
@@ -8,6 +17,8 @@
 
 #include "kernel.def"
 #include "../kernel-6303.def"
+
+	.setcpu 6303
 
 	.common
 
@@ -23,7 +34,14 @@ _ramtop:
 ; from switchout().
 _platform_switchout:
 	sei
-	sts _udata + U_DATA__U_SP	; Save it
+	clra
+	psha
+	psha				; Return code
+	sts _udata + U_DATA__U_SP	; Save old SP
+
+	jsr map_process_always
+	jsr stash_udata
+	jsr map_kernel
 
         ; set inint to false
 	clr _inint
@@ -37,6 +55,25 @@ _platform_switchout:
         ; we should never get here
         jsr _platform_monitor
 
+stash_udata:
+	ldx #_udata
+	ldd #$BE00		; Ick FIXME hardcoded
+	std work
+stash_loop:
+	ldd ,x
+	inx
+	inx
+	pshx
+	ldx work
+	std ,x
+	inx
+	inx
+	stx work
+	pulx
+	cpx #_udata+512
+	bne stash_loop
+	rts
+
 badswitchmsg:
 	.ascii "_switchin: FAIL"
 	.byte 13
@@ -49,12 +86,45 @@ badswitchmsg:
 _switchin:
 	sei
 	tsx
-	ldx	3,x
+	ldx	2,x
 	stx	switch_proc_ptr
 
-	ldab	P_TAB__P_PAGE_OFFSET+1,x
-	stab	0xFE78		; switches 8000-BFFF FIXME:
+	ldd	P_TAB__P_PAGE_OFFSET,x
+	cmpa	_udata+U_DATA__U_PAGE
+	beq nostash
 
+	subd	@zero		;compare with 0
+	bne	not_swapped
+	jsr	_swapper
+	ldx	switch_proc_ptr
+	ldab	P_TAB__P_PAGE_OFFSET+1,x
+
+not_swapped:
+	jsr	map_process_x
+
+	; We must do this inline as we will be changing stack under
+	; ourselves and without stack
+	ldx	#$BE00
+	ldd	#_udata
+	std	work
+unstash_loop:
+	ldd	,x
+	inx
+	inx
+	stx	work2
+	ldx	work
+	std	,x
+	inx
+	inx
+	stx	work
+	ldx	work2
+	cpx	#$C000		; BE000 + 0200
+	bne	unstash_loop
+
+	; Now get the stack back sane
+	lds	_udata + U_DATA__U_SP
+	jsr	map_kernel
+nostash:
         ; check u_data->u_ptab matches what we wanted
 	ldx	_udata + U_DATA__U_PTAB
 	cpx	switch_proc_ptr
@@ -64,8 +134,15 @@ _switchin:
 	ldx	switch_proc_ptr
 	stab	P_TAB__P_STATUS_OFFSET,x
 
-	clr _runticks
-	clr _runticks+1
+	; fix up our pages as they may have changed
+	ldd P_TAB__P_PAGE_OFFSET,x
+	std _udata + U_DATA__U_PAGE
+	ldaa P_TAB__P_PAGE_OFFSET+2,x
+	staa _udata + U_DATA__U_PAGE+2
+
+	clra
+	clrb
+	std _runticks
 
         ; restore machine state -- note we may be returning from either
         ; _switchout or _dofork
@@ -74,7 +151,7 @@ _switchin:
         beq swtchdone		; in ISR, leave interrupts off
 	cli
 swtchdone:
-	pula
+	pula			; recover return code
 	pulb
         rts
 
@@ -99,15 +176,13 @@ _dofork:
         sei	 ; should already be the case ... belt and braces.
 
 	tsx
-	ldx 3,x
+	ldx 2,x
 	; new process in X, get parent pid into y
 
 	stx fork_proc_ptr
 
 	ldx P_TAB__P_PID_OFFSET,x
-	pshx
-
-	; FIXME - save compiler temporaries
+	pshx				; Push the PID
 
 	sts _udata + U_DATA__U_SP
 
@@ -120,16 +195,8 @@ _dofork:
 
 	jsr fork_copy
 
-	; --------- we switch stack copies here -----------
-        ldx fork_proc_ptr
-	ldab P_TAB__P_PAGE_OFFSET,x
-	stab 0xFE78			; switch to child and child stack
-					; and zero page etc FIXME
-	; We are now in the kernel child context
-
         ; now the copy operation is complete we can get rid of the stuff
 	; _switchin will be expecting from our copy of the stack.
-	pulx
 	pulx
 
 	ldx fork_proc_ptr
@@ -143,11 +210,11 @@ _dofork:
 	; any calls to map process will now map the childs memory
 
         ; runticks = 0;
-	clr _runticks
-	clr _runticks+1
+	clra
+	clrb
+	std _runticks
 
         ; in the child process, fork() returns zero.
-	ldd #0
 
 	; And we exit, with the kernel mapped, the child now being deemed
 	; to be the live uarea. The parent is frozen in time and space as
@@ -163,34 +230,23 @@ _dofork:
 ;	Copy memory
 ;
 fork_copy:
-	ldx _udata+U_PTAB
-	ldaa _udata+P_TAB__P_PAGE_OFFSET+1,x
+	ldx fork_proc_ptr
+	ldaa P_TAB__P_PAGE_OFFSET,x
+	ldab _udata+U_DATA__U_PAGE
+	bsr bank2bank
+	inx
+	ldaa P_TAB__P_PAGE_OFFSET,x
 	ldab _udata+U_DATA__U_PAGE+1
-	pshb
-	psha
-	bsr banktobank
-	pula
-	pulb
-	inca
-	incb
-	pshb
-	psha
-	bsr banktobank
-	pula
-	pulb
-	inca
-	incb
-	pshb
-	psha
-	bsr banktobank
-	pula
-	pulb
-	inca
-	incb
-	; This last one copies more than needed of the common space but
-	; will be relevant when we go to proper banking
-	bsr banktobank
-	rts
+	bsr bank2bank
+	inx
+	ldaa P_TAB__P_PAGE_OFFSET,x
+	ldab _udata+U_DATA__U_PAGE+2
+	bsr bank2bank
+
+	ldx _udata+U_DATA__U_PTAB
+	jsr map_process_x
+	jsr stash_udata
+	jmp map_kernel_di
 
 ;
 ;	The 680x isn't very good at block copying. We can do tricks with
@@ -204,28 +260,37 @@ fork_copy:
 ;	Alas we can't use EIM here because it doesn't do extended addresses
 ;	and our MMU is in I/O space ($FExx)
 ;
-;	Copy 16K from page A to page B. Caller is responsible for putting
+;	Copy 16K from page B to page A. Caller is responsible for putting
 ;	banks back sane
 ;
 bank2bank:
-	stab $FE79		; Switch to destination bank
-	staa patch1		; Patch the source bank return id
-	staa $FE79		; Switch to source bank
-	stab patch2		; And patch the dest bank switch
+	pshx
+	staa patch1+1		; Patch the dest bank
+	stab patch2+1		; Patch the dest bank
+	stab $FE79		; Switch to source bank
 	ldx #$4000		; Start address
 copyloop:
 	ldab ,x
 patch1:
 	ldaa #0
-	staa #$FE79		; Switch bank to secondary
+	staa $FE79		; Switch bank to secondary
 	stab ,x
 	inx
 patch2:
 	ldaa #0
-	staa #$FE79		; And back
+	staa $FE79		; And back
 	cpx #$8000		; End at 0x8000
 	bne copyloop
+	pulx
 	rts
+
+;
+;	These need to live in common space as we have user mapped some
+;	of the time we access them. Ideally we'd move these to a special
+;	kernel DP area in common iram: TODO
+;
+work:	.word	0
+work2:	.word	0
 
 ;
 ;	The switch proc pointer cannot live anywhere in common as we switch

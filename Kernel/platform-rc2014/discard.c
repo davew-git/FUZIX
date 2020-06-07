@@ -65,10 +65,11 @@ static uint8_t probe_tms9918a(void)
 	/* Try turning it on and looking for a vblank */
 	tmsconfig(tmsreset);
 	tmsconfig(tmstext);
+
 	/* Should see the top bit go high */
 	do {
 		v = tms9918a_ctrl & 0x80;
-	} while(ct-- && !(v & 0x80));
+	} while(--ct && !(v & 0x80));
 
 	if (ct == 0)
 		return 0;
@@ -165,6 +166,7 @@ static uint8_t probe_16x50(uint8_t p)
 #define CTL2	0x17
 #define CRD	0x1A
 #define IVR2	0x1C
+#define STCT2	0x1E	/* Read... */
 
 static uint8_t probe_quart(void)
 {
@@ -219,12 +221,74 @@ static void quart_clock(void)
 	/* Timer, clock / 16 */
 	out16(QUARTREG(ACR2), 0x70);	/* Adjust for RTS/CTS too */
 	/* 10 ticks per second */
-	out16(QUARTREG(CTL2), 46080 & 0xFF);
-	out16(QUARTREG(CTU2), 46080 >> 8);
+	out16(QUARTREG(CTL2), 11520 & 0xFF);
+	out16(QUARTREG(CTU2), 11520 >> 8);
 	/* Timer interrupt also wanted */
-	out16(QUARTREG(IMR2), 0x32);
+	out16(QUARTREG(IMR2), 0x22 | 0x08);
+	/* Timer on */
+	in16(QUARTREG(STCT2));
 	/* Tell the quart driver to do do timer ticks */
-	quart_timer = 1;
+	timer_source = TIMER_QUART;
+	kputs("quart clock enabled\n");
+}
+
+__sfr __at 0xA0 sc26c92_mra;
+__sfr __at 0xA2 sc26c92_cra;
+__sfr __at 0xA4 sc26c92_acr;
+__sfr __at 0xA6 sc26c92_ctu;
+__sfr __at 0xA7 sc26c92_ctl;
+__sfr __at 0xA5 sc26c92_imr;
+__sfr __at 0xA8 sc26c92_mrb;
+__sfr __at 0xAA sc26c92_crb;
+__sfr __at 0xAE sc26c92_start;
+__sfr __at 0xAF sc26c92_stop;
+
+static uint8_t probe_sc26c92(void)
+{
+	volatile uint8_t dummy;
+
+	/* These dummy reads for timer control reply FF */
+	if (sc26c92_start != 0xFF || sc26c92_stop != 0xFF)
+		return 0;
+
+	sc26c92_acr = 0x30;		/* Count using the 7.37MHz clock */
+	dummy = sc26c92_start;		/* Set it running */
+	if (sc26c92_ctl == sc26c92_ctl)	/* Reads should show different */
+		return 0;		/* values */
+	dummy = sc26c92_stop;		/* Stop the clock */
+	if (sc26c92_ctl != sc26c92_ctl)	/* and now same values */
+		return 0;
+	/* Ok looks like an SC26C92  */
+	sc26c92_cra = 0x10;		/* MR1 always */
+	sc26c92_cra = 0xB0;		/* MR0 on a 26C92, X bit control on a 88C681 */
+	sc26c92_mra = 0x00;		/* We write MR1/MR2 or MR0/1... */
+	sc26c92_mra = 0x01;
+	sc26c92_cra = 0x10;		/* MR1 */
+	sc26c92_imr = 0x22;
+	if (sc26c92_mra & 0x01) {
+		/* SC26C92 */
+		sc26c92_crb = 0xB0;	/* Fix up MR0B, MR0A was done in the probe */
+		sc26c92_mrb = 0x00;
+		sc26c92_acr = 0x80;	/* ACR on counter off */
+		return 1;
+	}
+	/* 88C681 */
+	sc26c92_acr = 0x00;
+	return 2;
+}
+
+static void sc26c92_timer(void)
+{
+	volatile uint8_t dummy;
+	if (sc26c92_present == 1)		/* SC26C92 */
+		sc26c92_acr = 0xB0;		/* Counter | ACR = 1 */
+	else					/* 88C681 */
+		sc26c92_acr = 0x30;		/* Counter | ACR = 0 */
+	sc26c92_ctl = 46080 & 0xFF;
+	sc26c92_ctu = 46080 >> 8;
+	dummy = sc26c92_start;
+	sc26c92_imr = 0x32;		/* Timer and both rx/tx */
+	timer_source = TIMER_SC26C92;
 }
 
 void init_hardware_c(void)
@@ -237,13 +301,11 @@ void init_hardware_c(void)
 
 	tms9918a_present = probe_tms9918a();
 	if (tms9918a_present) {
-		/* Turn off our CTC interrupts */
-		CTC_CH2 = 0x43;
-		CTC_CH3 = 0x43;
 		shadowcon = 1;
+		timer_source = TIMER_TMS9918A;
 	}
 
-	/* FIXME: When ROMWBW handles 16550A or second SIO, or Z180 as
+	/* FIXME: When ROMWBW handles second SIO, or Z180 as
 	   console we will need to address this better */
 	if (z180_present) {
 		z180_setup(!ctc_present);
@@ -251,33 +313,49 @@ void init_hardware_c(void)
 		register_uart(Z180_IO_BASE + 1, &z180_uart1);
 		rtc_port = 0x0C;
 		rtc_shadow = 0x0C;
+		timer_source = TIMER_Z180;
 	}
 
 	/* Set the right console for kernel messages */
-	/* ROMWBW favours the SIO then the ACIA */
+	/* ROMWBW favours the UART then SIO then ACIA */
+	if (u16x50_present) {
+		register_uart(0xA0, &ns16x50_uart);
+		if (probe_16x50(0xA8))
+			register_uart(0xA8, &ns16x50_uart);
+	}
 	if (sio_present) {
 		register_uart(0x80, &sio_uart);
 		register_uart(0x82, &sio_uartb);
 	}
 	if (acia_present)
 		register_uart(0xA0, &acia_uart);
+	/* TODO: sc26c92 as boot probe if added to ROMWBW */
 }
 
 __sfr __at 0xBC copro_ack;
-__sfr __banked __at 0xFFBC copro_boot;
+__sfr __banked __at 0xFFBC copro_boot;	/* INT, NMI reset high */
+__sfr __banked __at 0xBC copro_reset;	/* reset low */
 
 static uint8_t probe_copro(void)
 {
 	uint8_t i = 0;
 	uint8_t c;
 
+	copro_reset = 0x00;		/* Force a reset */
+	while(i < 255)
+		i++;
+
 	copro_boot = 0x00;
+
+	i = 0;
 	while(i < 255 && copro_ack != 0xAA) {
 		i++;
 	}
 	if (i == 255)
 		return 0;
+
 	copro_boot = 0xFF;
+	i = 0;
 	while(i < 255 && copro_ack == 0xAA) {
 		i++;
 	}
@@ -303,6 +381,9 @@ static uint8_t probe_copro(void)
 	return 1;
 }
 
+/*
+ *	Do the main memory bank and device set up
+ */
 void pagemap_init(void)
 {
 	uint8_t i, m;
@@ -330,19 +411,14 @@ void pagemap_init(void)
 	quart_present = probe_quart();
 	/* Further ports we register at this point */
 	if (quart_present) {
-		platform_tick_present = 1;
 		register_uart(0x00BA, &quart_uart);
 		register_uart(0x40BA, &quart_uart);
 		register_uart(0x80BA, &quart_uart);
 		register_uart(0xC0BA, &quart_uart);
-		/* Turn off our CTC interrupts */
-		CTC_CH2 = 0x43;
-		CTC_CH3 = 0x43;
 		/* If we don't have a TMS9918A then the QUART is the next
 		   best clock choice */
-		if (!tms9918a_present) {
+		if (timer_source == TIMER_NONE)
 			quart_clock();
-		}
 	}
 
 	if (sio1_present) {
@@ -351,15 +427,43 @@ void pagemap_init(void)
 	}
 
 	if (ctc_present) {
-		platform_tick_present = 1;
+		if (timer_source == TIMER_NONE)
+			timer_source = TIMER_CTC;
+		else {
+			/* Turn off our CTC interrupts */
+			CTC_CH2 = 0x43;
+			CTC_CH3 = 0x43;
+		}
 		kputs("Z80 CTC detected at 0x88.\n");
 	}
 
 	if (tms9918a_present) {
-		platform_tick_present = 1;
 		kputs("TMS9918A VDP detected at 0x98.\n");
 	}
 
+	if (!acia_present)
+		sc26c92_present = probe_sc26c92();
+
+	if (sc26c92_present == 1) {
+		kputs("SC26C92 detected at 0xA0.\n");
+		register_uart(0x00A0, &sc26c92_uart);
+		register_uart(0x00A8, &sc26c92_uart);
+		if (timer_source == TIMER_NONE)
+			sc26c92_timer();
+	}
+	if (sc26c92_present == 2) {
+		kputs("XR88C681 detected at 0xA0.\n");
+		register_uart(0x00A0, &xr88c681_uart);
+		register_uart(0x00A8, &xr88c681_uart);
+		if (timer_source == TIMER_NONE)
+			sc26c92_timer();
+	}
+
+	/* Complete the timer set up */
+	if (timer_source == TIMER_NONE)
+		kputs("Warning: no timer available.\n");
+	else
+		platform_tick_present = 1;
 
 	dma_present = !probe_z80dma();
 	if (dma_present)
@@ -373,10 +477,16 @@ void pagemap_init(void)
 	if (copro_present)
 		kputs("Z80 Co-processor at 0xBC\n");
 
+	/* Normal RC2014 is 8 clocks/us or so. Allow more for faster
+	   processors - we don't do much output bashing anyway. Should be
+	   good to 25MHz */
 	kbsave = 0x00;
-	kbdelay = 0xFF;	/* FIXME: tune for 125uS */
+	kbdelay = 0x0A14;	/* High bits are a djnz delay for 20us
+				   Low a 44us djnz delay */
+	/* Port default for the PS/2 card */
 	kbport = 0xBB;
-	kbwait = 0xFFFF;	/* FIXME: tune */
+	/* 150uS in 38 clock loops : set for 8MHz */
+	kbwait = 250;	/* Needs to be about 200us */
 	ps2kbd_present = ps2kbd_init();
 	if (ps2kbd_present) {
 		kputs("PS/2 Keyboard at 0xBB\n");
@@ -384,13 +494,17 @@ void pagemap_init(void)
 			/* Add the consoles */
 			uint8_t n = 0;
 			shadowcon = 0;
+			kputs("Switching to video output.\n");
 			do {
 				insert_uart(0x98, &tms_uart);
 				n++;
 			} while(n < 4 && nuart <= NUM_DEV_TTY);
 		}
 	}
-	/* TODO: mouse init and probe */
+	if (ps2kbd_present & 2) {
+		kputs("PS/2 Mouse at 0xBB\n");
+		/* TODO: wire to input layer and interrupt */
+	}
 
 	/* Devices in the C0-CF range cannot be used with Z180 */
 	if (!z180_present) {

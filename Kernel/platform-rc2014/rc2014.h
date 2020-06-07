@@ -47,8 +47,17 @@ extern uint8_t zxkey_present;
 extern uint8_t copro_present;
 extern uint8_t ps2kbd_present;
 extern uint8_t ps2mouse_present;
+extern uint8_t sc26c92_present;
+extern uint8_t u16x50_present;
 
-extern uint8_t quart_timer;
+extern uint8_t timer_source;
+#define TIMER_NONE		0
+#define TIMER_CTC		1
+#define TIMER_TMS9918A		2
+#define TIMER_QUART		3
+#define TIMER_SC26C92		4
+#define TIMER_Z180		5
+
 
 extern uint16_t probe_z80dma(void);
 
@@ -87,9 +96,12 @@ extern struct uart z180_uart0;
 extern struct uart z180_uart1;
 extern struct uart tms_uart;
 extern struct uart quart_uart;
+extern struct uart sc26c92_uart;
+extern struct uart xr88c681_uart;
 
 extern uint8_t *init_alloc(uint16_t size);
 extern uint8_t *code1_alloc(uint16_t size);
 
+extern void do_timer_interrupt(void);
 
 #endif

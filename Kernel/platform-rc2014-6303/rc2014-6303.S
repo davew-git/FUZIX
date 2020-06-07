@@ -1,5 +1,7 @@
 ;
-;	    rc2014 6502 platform functions
+;	    rc2014 6303 platform functions
+;
+;	The 6303 is a very clean processor so there isn't a lot required here
 ;
 
             .export init_early
@@ -11,6 +13,7 @@
 	    .export map_process_always
 	    .export map_save_kernel
 	    .export map_restore
+	    .export map_process_x
 
             ; exported debugging tools
             .export _platform_monitor
@@ -20,11 +23,13 @@
 	    .export ___hard_ei
 	    .export ___hard_irqrestore
 
+	    .setcpu 6303
+
 #include "kernel.def"
 #include "../kernel-6303.def"
 
 ; -----------------------------------------------------------------------------
-; COMMON MEMORY BANK (0x0200 upwards after the common data blocks)
+; COMMON MEMORY BANK
 ; -----------------------------------------------------------------------------
 
 	    .common
@@ -34,18 +39,28 @@ _platform_reboot:
 	    jsr map_kernel
 	    jmp rebootit
 
+;
+;	For now do hard interrupt masking. We will want to change this to
+;	only do timer masking once we have separate serial I/O buffering
+;
+;
+;	Disable interrupts and return the old interrupt flag.
+;
 ___hard_di:
 	    tpa
 	    tab
 	    sei			; Save old state in return to C
 	    rts
+;
+;	Enable interrupts
+;
 ___hard_ei:
 	    cli			; on 680x cli enables IRQs!!!
 	    rts
 
 ___hard_irqrestore:
 	    tsx
-	    ldab 3,x
+	    ldab 2,x
 	    andb #16		; IRQ flag
 	    bne irq_on
 	    cli
@@ -68,7 +83,7 @@ init_early:
             rts			; stack was copied so this is ok
 
 init_hardware:
-            ; set system RAM size for test purposes
+            ; set system RAM size
 	    ldd #512
 	    std _ramsize
 	    ldd #448
@@ -83,11 +98,16 @@ init_hardware:
 _program_vectors:
             ; we are called, with interrupts disabled, by both newproc() and crt0
 	    ; will exit with interrupts off
-	    sei
 	    ;
-	    ; our C caller will invoke us with the pointer in x,a
+	    ; our C caller will invoke us with the pointer in 3,S
 	    ; just pass it on
+	    ; our C caller will invoke us with the pointer C style
+	    tsx
+	    ldx 2,x
 	    jsr map_process
+	    ;
+	    ; We need to split these up
+	    ;
 program_vectors_k:
 	    ldd #interrupt_handler
 	    std 0xFFF2		; timer overflow
@@ -108,17 +128,20 @@ program_vectors_k:
 nullirq:
 	    rti
 
+;
+;	Map the current process, do not change register values
+;
 map_process_always:
-	    pshb
-	    ldab _udata + U_DATA__U_PAGE+1	; big endian
+	    pshx
+	    ldx #_udata + U_DATA__U_PAGE
 	    jsr map_bank
-	    pulb
+	    pulx
 	    rts
 ;
-;	X points to the map table of this process
+;	X points to the map table of this process, preserve D
 ;
 map_process:
-	    cpx #0
+	    cpx @zero
 	    bne map_process_2
 ;
 ;	Map in the kernel below the current common, all registers preserved
@@ -129,32 +152,42 @@ map_process:
 ;
 map_kernel_di:
 map_kernel:
-	    pshb
+	    pshx
 				; Common is left untouched
-	    ldab #$20		; Kernel RAM
+	    ldx #kmap		; Kernel RAM
 	    jsr map_bank
-	    pulb
+	    pulx
 	    rts
+kmap:
+	    .byte 0x20
+	    .byte 0x21
+	    .byte 0x22
 
 ;
 ;	For now we are using the 4x16K MMU but this will probably change.
 ;	Switch the low 48K, the task switch flips the top. Hack until we
 ;	enable the real MMU and banking setup.
 ;
+;	Probably we should use the 8K/56K MMU card.
+;
+map_process_x:
+	    ldab #P_TAB__P_PAGE_OFFSET
+	    abx
+map_process_2:
 map_bank:
-	    stab 0xFE78
-	    stab cur_map
-	    addb #1
-	    stab 0xFE79
-	    addb #1
+	    pshb
+	    ; We must load these both before the map changes because we
+	    ; might be unmapping the table X points to
+	    ldab 2,x
+	    ldx ,x
+	    stab cur_map+2
 	    stab 0xFE7A
-	    ; And don't swap the common here but in the task switch
+	    stx cur_map
+	    stx 0xFE78
+	    pulb
+	    
 	    rts
 
-; X holds the map table of this process
-map_process_2:
-	    ldab 1,x		; Big endian
-	    jmp map_bank
 
 
 ;
@@ -164,10 +197,10 @@ map_process_2:
 ;	so this is fine.
 ;
 map_restore:
-	    pshb
-	    ldab saved_map	; First bank we skip half of
+	    pshx
+	    ldx #saved_map
 	    jsr map_bank
-	    pulb
+	    pulx
 	    rts
 
 ;
@@ -176,14 +209,22 @@ map_restore:
 ;
 map_save_kernel:
 	    pshb
-	    ldab cur_map
-	    stab saved_map	; always save the map in the right commonmem
+	    psha
+	    ldab cur_map+2
+	    stab saved_map+2	; always save the map in the right commonmem
+	    ldd cur_map
+	    std saved_map
 	    jsr map_kernel
+	    pula
 	    pulb
 	    rts
 
 cur_map:    .byte 0
+	    .byte 0
+	    .byte 0
 saved_map:  .byte 0
+	    .byte 0
+	    .byte 0
 
 ; outchar: Wait for UART TX idle, then print the char in a without
 ; corrupting other registers
@@ -195,7 +236,7 @@ outcharw:
 	    anda #$20
 	    beq outcharw
 	    pula
-	    staa $13
+	    stab $13
 	    rts
 
 ;
@@ -211,12 +252,12 @@ outcharw:
 
 _hd_read_data:
 	tsx
-	ldx 3,x
+	ldx 2,x
 
 	;
 	;	We must flip banks before we play mmu pokery, or it will
 	; undo all our work. This means our variables must be commondata
-	;
+	; and we must reference them before we map_process
 	ldab _hd_map
 	beq hd_kmap
 	jsr map_process_always
@@ -231,16 +272,17 @@ hd_read256:
 	ldaa 0xFE10
 	staa ,x
 	inx
-	addb #1
+	incb
 	bne hd_read256
 	rts
 
 _hd_write_data:
 	tsx
-	ldx 3,x
+	ldx 2,x
 	;
 	;	We must flip banks before we play mmu pokery, or it will
 	; undo all our work. This means our variables must be commondata
+	; and we must reference them before we map_process
 	;
 	ldab _hd_map
 	beq hd_kmapw
@@ -256,7 +298,7 @@ hd_write256:
 	ldaa ,x
 	staa 0xFE10
 	inx
-	addb #1
+	incb
 	bne hd_write256
 	rts
 

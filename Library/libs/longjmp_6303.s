@@ -1,6 +1,7 @@
 
 	.export	_longjmp
 
+	.setcpu 6803
 	.code
 
 ;
@@ -9,11 +10,12 @@
 ;	about
 ;
 _longjmp:
-	ldd	5,x		; retval
+	tsx
+	ldd	2,x		; retval
 	bne	retok
-	ldab	#1		; retval 1 if 0 requested
+	incb			; retval 1 if 0 requested
 retok:
-	ldx	3,x		; get the setjmp buffer
+	ldx	4,x		; get the setjmp buffer
 	lds	,x		; recover the stack pointer
 	ldx	2,x		; and the restored pc
 	ins			; adjust the stack

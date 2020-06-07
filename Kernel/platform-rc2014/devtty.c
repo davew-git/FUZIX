@@ -27,6 +27,10 @@ tcflag_t termios_mask[NUM_DEV_TTY + 1] = {
 	CSIZE|CBAUD|CSTOPB|PARENB|PARODD|_CSYS,
 	CSIZE|CBAUD|CSTOPB|PARENB|PARODD|_CSYS,
 	CSIZE|CBAUD|CSTOPB|PARENB|PARODD|_CSYS,
+	CSIZE|CBAUD|CSTOPB|PARENB|PARODD|_CSYS,
+	CSIZE|CBAUD|CSTOPB|PARENB|PARODD|_CSYS,
+	CSIZE|CBAUD|CSTOPB|PARENB|PARODD|_CSYS,
+	CSIZE|CBAUD|CSTOPB|PARENB|PARODD|_CSYS
 };
 
 /* FIXME: CBAUD general handling - may need 0.4 changes to fix */
@@ -663,6 +667,7 @@ static int log = 0;
 
 static uint8_t quart_intr(uint8_t minor)
 {
+	uint8_t d;
 	/* FIXME: we need to check for OE status and if so issue CMD 0x40 */
 	/* The QUART is really a pair of two port UARTs together */
 	/*
@@ -679,32 +684,32 @@ static uint8_t quart_intr(uint8_t minor)
 	 */
 	uint8_t r = in16(QUARTPORT + QUARTREG(ISR1));
 	if (r & 0x02) {
-		r = in16(QUARTPORT + QUARTREG(RHRA));
-		tty_inproc(minor, r);
+		d = in16(QUARTPORT + QUARTREG(RHRA));
+		tty_inproc(minor, d);
 	}
 	if (r & 0x20) {
-		r = in16(QUARTPORT + QUARTREG(RHRB));
+		d = in16(QUARTPORT + QUARTREG(RHRB));
                 if (minor + 1 <= NUM_DEV_TTY)
-			tty_inproc(minor + 1 , r);
+			tty_inproc(minor + 1 , d);
 	}
 	/* ISR2 is the same for the other half - port C/D and counter 2 */
 	r = in16(QUARTPORT + QUARTREG(ISR2));
 	if (r & 0x02) {
-		r = in16(QUARTPORT + QUARTREG(RHRC));
+		d = in16(QUARTPORT + QUARTREG(RHRC));
                 if (minor + 2 <= NUM_DEV_TTY)
-			tty_inproc(minor + 2 , r);
+			tty_inproc(minor + 2 , d);
 	}
 	if (r & 0x20) {
-		r = in16(QUARTPORT + QUARTREG(RHRD));
+		d = in16(QUARTPORT + QUARTREG(RHRD));
                 if (minor + 3 <= NUM_DEV_TTY)
-			tty_inproc(minor + 3, r);
+			tty_inproc(minor + 3, d);
 	}
-	if (quart_timer && (r & 0x10)) {
+	if (timer_source == TIMER_QUART && (r & 0x08)) {
 		/* Clear the timer interrupt - in timer mode it keeps
 		   running so we don't need to reload the timer */
 		in16(QUARTPORT + QUARTREG(STC2));
 		/* Timer tick */
-		timer_interrupt();
+		do_timer_interrupt();
 	}
 	return 4;
 }
@@ -762,11 +767,11 @@ static void quart_setup(uint8_t minor)
 {
 	struct termios *t = &ttydata[minor].termios;
 	uint16_t port = ttyport[minor];
-	uint8_t r;
+	uint8_t r = 0;
 	uint8_t baud = t->c_cflag & CBAUD;
 
 	if (!(t->c_cflag & PARENB))
-		r = 0x08;	/* No parity */
+		r = 0x10;	/* No parity */
 	if (t->c_cflag & PARODD)
 		r |= 0x04;
 	/* 5-8 bits */
@@ -838,6 +843,168 @@ struct uart quart_uart = {
 	carrier_unwired,
 	CSIZE|CBAUD|CSTOPB|PARENB|PARODD|CRTSCTS|_CSYS,
 	"QUART"
+};
+
+/*
+ *	26C92 UART driver. We use this for a lot more than UART so don't
+ *	touch anything we shouldn't as it may also be driving bit bang SPI SD
+ *	cards.
+ *
+ *	To support the EXAR version we need a different initial set up and
+ *	baud rate process.
+ *
+ *	The big differences are:
+ *	- No MR0 on the 88C681
+ *	- IM2 on 88C681
+ *	- Some commands are different
+ *	- It has useful per channel and per RX/TX BRG configuration bits
+ *	- Less/different FIFO controls
+ */
+
+static uint8_t sc26c92_intr(uint8_t minor)
+{
+	uint8_t p = ttyport[minor];
+	uint8_t r = in(p + ISR1);
+	if (r & 0x02)
+		tty_inproc(minor, in(p + RHRA));
+	if (r & 0x20)
+		tty_inproc(minor, in(p + RHRB));
+	if (r & 0x10) {
+		in(p + STC1);
+		if (timer_source == TIMER_SC26C92)
+			do_timer_interrupt();
+	}
+	return 2;
+}
+
+/* SC26C92 @7.372MHz */
+static uint8_t sc26c92_baud[16] = {
+	0x99,
+	0xFF,	/* 50 */
+	0xFF,	/* 75 */
+	0xFF,	/* 110 */
+	0xFF,	/* 134.5 */
+	0x00,	/* 150 */
+	0x33,	/* 300 */
+	0x44,	/* 600 */
+	0x55,	/* 1200 */
+	0x66,	/* 2400 */
+	0x88,	/* 4800 */
+	0x99,	/* 9600 */
+	0xBB,	/* 19200 */
+	0xCC,	/* 38400 */
+	0xFF,	/* 57600 */
+	0xFF	/* 115200 */
+};
+
+/* XR88C681 @3.68MHz is like the quart so use that table */
+
+/* For the SC26C92 this is a fairly simple approach just using the best table.
+   We can in theory look for combinations to get high speed or if not using
+   the timer use the timer to get one port on an otherwise unreachable rate.
+   For the Exar parts it's easy we have per channel baud source select */
+
+static void xrsc_setup(uint8_t minor, uint8_t exar)
+{
+	struct termios *t = &ttydata[minor].termios;
+	uint8_t p = ttyport[minor];
+	uint8_t b = p & 0xF0;	/* Base of card */
+	uint8_t baud = t->c_cflag & CBAUD;
+	uint8_t r;
+
+	if (!(t->c_cflag & PARENB))
+		r = 0x10;	/* No parity */
+	if (t->c_cflag & PARODD)
+		r |= 0x04;	/* Odd parity */
+	r |= (t->c_cflag & CSIZE) >> 4;	/* Fill in the size bits */
+	if (t->c_cflag & CRTSCTS)	/* Enable RTS control if CTSRTS in use */
+		r |= 0x80;
+
+	out(p + CRA, 0x10);	/* Select MR1 */
+	out(p + MRA, r);	/* Set up MR1 */
+
+	r = 0;
+	if ((t->c_cflag & CSIZE) == CS5)
+		r = 0;
+	else
+		r = 7;
+	if (t->c_cflag & CRTSCTS)
+		r = 0x10;	/* CTS enables transmitter */
+	if (t->c_cflag & CSTOPB)
+		r |= 0x08;	/* Two stop bits */
+	out(p + MRA, r);	/* Set up MR2 */
+
+	if (exar) {
+		/* Assumes ACR[7] = 0 */
+		r = baudmap[baud];
+		if (r & XBIT) {
+			out(p + CRA, 0x80);
+			out(p + CRA, 0xA0);
+		} else {
+			out(p + CRA, 0x90);
+			out(p + CRA, 0xB0);
+		}
+	} else {
+		/* Baud handling. We for now just use baud 0, ACR 1 */
+		r = sc26c92_baud[baud];
+		/* Ones we cannot do yet */
+		if (r == 0xFF) {
+			t->c_cflag &= ~CBAUD;
+			t->c_cflag |= B9600;
+			r = 0x99;
+		}
+	}
+	out(p + CSRA, r);	/* Speed */
+	out(p + CRA, 0x05);	/* Enable RX and TX */
+
+}
+
+static void sc26c92_setup(uint8_t minor)
+{
+	xrsc_setup(minor, 0);
+}
+
+static void xr88c681_setup(uint_fast8_t minor)
+{
+	xrsc_setup(minor, 1);
+}
+
+static uint_fast8_t sc26c92_writeready(uint_fast8_t minor)
+{
+	uint8_t p = ttyport[minor];
+	if (in(p + SRA) & 0x04)
+		return TTY_READY_NOW;
+	return TTY_READY_SOON;
+}
+
+static void sc26c92_putc(uint_fast8_t minor, uint_fast8_t c)
+{
+	uint8_t p = ttyport[minor];
+	out(p + THRA, c);
+}
+
+/*
+ *	SC26C92 and XR88C681 driver
+ */
+
+struct uart sc26c92_uart = {
+	sc26c92_intr,
+	sc26c92_writeready,
+	sc26c92_putc,
+	sc26c92_setup,
+	carrier_unwired,
+	CSIZE|CBAUD|CSTOPB|PARENB|PARODD|CRTSCTS|_CSYS,
+	"SC26C92"
+};
+
+struct uart xr88c681_uart = {
+	sc26c92_intr,
+	sc26c92_writeready,
+	sc26c92_putc,
+	xr88c681_setup,
+	carrier_unwired,
+	CSIZE|CBAUD|CSTOPB|PARENB|PARODD|CRTSCTS|_CSYS,
+	"XR88C681"
 };
 
 /*
@@ -916,9 +1083,10 @@ struct uart tms_uart = {
 uint8_t register_uart(uint16_t port, struct uart *ops)
 {
 	queue_t *q = ttyinq + nuart;
-	uint8_t *buf = code1_alloc(TTYSIZ);
-	if (buf == NULL || nuart > NUM_DEV_TTY)
-		return 0;
+	uint8_t *buf;
+	if (nuart > NUM_DEV_TTY)
+	    return 0;
+	buf = code1_alloc(TTYSIZ);
 	ttyport[nuart] = port;
 	uart[nuart] = ops;
 	q->q_base = q->q_head = q->q_tail = buf;
@@ -934,7 +1102,16 @@ void insert_uart(uint16_t port, struct uart *ops)
 {
 	struct uart **p = &uart[NUM_DEV_TTY];
 	uint16_t *pt = &ttyport[NUM_DEV_TTY];
-	uint8_t *buf = code1_alloc(TTYSIZ);
+	uint8_t *buf;
+
+	/* Are we going to throw out a UART ? If so recycle the allocated
+	   buffer, if not we need one */
+	if (nuart > NUM_DEV_TTY) {
+		buf = ttyinq[NUM_DEV_TTY].q_base;
+		nuart--;
+	} else
+		buf = code1_alloc(TTYSIZ);
+
 	while(p != uart + 1) {
 		*p = p[-1];
 		*pt = pt[-1];
@@ -948,9 +1125,7 @@ void insert_uart(uint16_t port, struct uart *ops)
 	ttyinq[1].q_size = TTYSIZ;
 	ttyinq[1].q_count = 0;
 	ttyinq[1].q_wakeup =  TTYSIZ/2;
-	/* We may have booted one out */
-	if (nuart <= NUM_DEV_TTY)
-		nuart++;
+	nuart++;
 }
 
 /* Ditto into discard */
