@@ -386,7 +386,10 @@ typedef struct keytable_t {
 
 int done;
 int row, col;
-int indexp, page, epage;	/* Limits us to 32K buffer.. look at uint16? */
+/* These are effectively offsets from a pointer so size_t represents
+   the largest valid offset. This makes them unsigned so we must be
+   careful on comparisons */
+size_t indexp, page, epage;
 int input;
 int repeat;
 char *buf;

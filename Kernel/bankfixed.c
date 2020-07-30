@@ -35,10 +35,21 @@
 
 #ifdef CONFIG_BANK_FIXED
 
+/*
+ *	The page value is 16bit, but our internal map table is 8bit. There
+ *	are cases where the caller wants to use the full 16bits and expand
+ *	compact the representation. The default behaviour is a 1:1 map
+ */
+
+#ifndef MAP_TRANS_8TO16
+# define MAP_TRANS_8TO16(M)	(M)
+# define MAP_TRANS_16TO8(M)	(M)
+#endif
+
 /* Kernel is 0, apps 1,2,3 etc */
-static unsigned char pfree[MAX_MAPS];
-static unsigned char pfptr = 0;
-static unsigned char pfmax;
+static uint8_t pfree[MAX_MAPS];
+static uint_fast8_t pfptr = 0;
+static uint_fast8_t pfmax;
 
 void pagemap_add(uint8_t page)
 {
@@ -50,7 +61,7 @@ void pagemap_free(ptptr p)
 {
 	if (p->p_page == 0)
 		panic(PANIC_FREE0);
-	pfree[pfptr++] = p->p_page;
+	pfree[pfptr++] = MAP_TRANS_16TO8(p->p_page);
 }
 
 int pagemap_alloc(ptptr p)
@@ -62,7 +73,7 @@ int pagemap_alloc(ptptr p)
 #endif
 	if (pfptr == 0)
 		return ENOMEM;
-	p->p_page = pfree[--pfptr];
+	p->p_page = MAP_TRANS_8TO16(pfree[--pfptr]);
 	return 0;
 }
 

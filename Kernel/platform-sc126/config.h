@@ -11,8 +11,11 @@
 /* Permit large I/O requests to bypass cache and go direct to userspace */
 #define CONFIG_LARGE_IO_DIRECT(x)	1
 /* 8 60K banks, 1 is kernel */
-#define MAX_MAPS	8
+#define MAX_MAPS	16
 #define MAP_SIZE	PROGTOP    /* WRS: I feel this should be 60KB, but setting it so breaks pagemap_realloc() when exec calls it */
+
+#define MAP_TRANS_8TO16(M)	(((M) & (unsigned char)0xFE) | 0x8000)
+#define MAP_TRANS_16TO8(M)	((unsigned char)(M) | (unsigned char)0x01)
 
 /* Banks as reported to user space */
 #define CONFIG_BANKS	1
@@ -20,7 +23,7 @@
 #define TICKSPERSEC 40U     /* Ticks per second */
 #define PROGBASE    0x0000  /* also data base */
 #define PROGLOAD    0x0100  /* also data base */
-#define PROGTOP     0xF800  /* Top of program, base of U_DATA */
+#define PROGTOP     0xF000  /* Top of program, base of U_DATA */
 #define KERNTOP     0xF000  /* Kernel has lower 60KB */
 #define PROC_SIZE   64      /* Memory needed per process */
 
@@ -55,7 +58,7 @@
 extern uint16_t swap_dev;
 #define SWAP_SIZE   0x7D 	/* 62.5K in blocks (prog + udata) */
 #define SWAPBASE    0x0000	/* start at the base of user mem */
-#define SWAPTOP	    0xFA00	/* Swap out udata and program */
+#define SWAPTOP	    0xF200	/* Swap out udata and program */
 #define MAX_SWAPS   16	    	/* We will size if from the partition */
 /* Swap will be set up when a suitably labelled partition is seen */
 //#define CONFIG_DYNAMIC_SWAP
