@@ -1,5 +1,5 @@
 ;
-;	6303 version
+;	68HC11 version
 ;
 ;	We do not save the temporaries. The direct page is tied to each
 ;	map so the direct page working registers are also per process. Only
@@ -10,13 +10,17 @@
 ;	to switch udata objects on task switches. With the 56K/8K MMU we
 ;	could avoid this!
 ;
+;	We don't save a lot of stuff. The compiler assumes D X and Y will
+;	be changed by the called function anyway. The soft register state
+;	lives in DP so is switched with the task switch and copied by fork
+;
         .globl platform_switchout
         .globl switchin
         .globl dofork
 	.globl ramtop
 
 #include "kernel.def"
-#include "../kernel-6303.def"
+#include "../kernel-hc11.def"
 
 	.section .common
 
@@ -24,7 +28,7 @@
 ; and its a constant for the others from before init forks so it'll be fine
 ; here
 ramtop:
-	.word 0xF000
+	.word 0xBE00
 
 ; Switchout switches out the current process, finds another that is READY,
 ; possibly the same process, and switches it in.  When a process is
@@ -79,8 +83,9 @@ switchin:
 	std	switch_proc_ptr
 	xgdx
 
+	; FIXME: sort out offset rules
 	ldd	P_TAB__P_PAGE_OFFSET,x
-	cmpa	udata+U_DATA__U_PAGE
+	cmpb	udata+U_DATA__U_PAGE+1
 	beq nostash
 
 	subd	#0		;compare with 0
@@ -183,9 +188,9 @@ dofork:
 	; _switchin will be expecting from our copy of the stack.
 	pulx
 
-	ldx fork_proc_ptr
+	ldx #udata
 	pshx
-	ldd #udata
+	ldd fork_proc_ptr
         jsr makeproc
 	pulx
 
@@ -211,6 +216,7 @@ dofork:
 ;
 ;	Copy memory
 ;
+#if 0
 fork_copy:
 	ldx fork_proc_ptr
 	ldaa P_TAB__P_PAGE_OFFSET,x
@@ -229,28 +235,45 @@ fork_copy:
 	jsr map_process_x
 	jsr stash_udata
 	jmp map_kernel_di
+#endif
+;
+;	Copier until we switch to proper 16K banked
+;
+fork_copy:
+	ldx fork_proc_ptr
+	ldaa P_TAB__P_PAGE_OFFSET+1,x
+	ldab udata+U_DATA__U_PAGE+1
+	psha
+	pshb
+	jsr bank2bank
+	pulb
+	pula
+	inca
+	incb
+	psha
+	pshb
+	jsr bank2bank
+	pulb
+	pula
+	inca
+	incb
+	jsr bank2bank
+	jsr map_process_always_di
+	jsr stash_udata
+	jmp map_kernel_di
 
 ;
-;	The 680x isn't very good at block copying. We can do tricks with
-;	the stack pointer but lets avoid that for now. We could really do
-;	with an MMU with split read/write mappings so we could ldx,stx the
-;	same address.
-;
-;	In fact for the 6803/6303 it's actually better to pretend to have
-;	an MMU that works like that and keep switching the MMU
-;
-;	Alas we can't use EIM here because it doesn't do extended addresses
-;	and our MMU is in I/O space ($FExx)
-;
 ;	Copy 16K from page A to page B. Caller is responsible for putting
-;	banks back sane
+;	banks back sane. This is akin to the 6803 code except that we have
+;	the y register we can use to slightly speed up the copying.
 ;
 bank2bank:
 	pshx
-	stab 0xFE79		; Switch to destination bank
-	staa patch1+1		; Patch the source bank return id
-	staa 0xFE79		; Switch to source bank
-	stab patch2+1		; And patch the dest bank switch
+	stab 0xFE79		; Switch to source bank
+	staa patch1+1		; Patch the destination bank in
+	staa 0xFE79		; Switch to destination bank
+	stab patch2+1		; And patch the source bank in
+	stab 0xFE79		; Now switch to source bank
 	ldx #0x4000		; Start address
 copyloop:
 	ldy ,x

@@ -128,18 +128,17 @@ signal_raced:
 	rts
 deliver_signals_2:
 	tab
-	ldx #udata+U_DATA__U_SIGVEC
-	abx
-	abx
-	ldx 0,x
+	ldy #udata+U_DATA__U_SIGVEC
+	aby
+	aby
+	ldy 0,y
 	beq signal_raced
-	clrb
-	pshb
-	psha
-	ldd #signal_return
-	psha
-	pshb
-	jmp ,x
+	tab
+	clra
+	ldx #signal_return
+	pshx
+	ldx PROGLOAD+18		; FIXME assumes binary at base address
+	jsr ,x
 signal_return:
 	sei
 	sts udata+U_DATA__U_SYSCALL_SP
@@ -156,7 +155,7 @@ signal_return:
 ;	information, A holds the syscall number on entry, B the arg count
 ;	Arguments are left to right ordered.
 ;
-;	On enry our frame if called from a 6800 series CPU (ACCB >= 0). This
+;	On enry our frame if called from a 6800 series CPU (ACCB < 0x80). This
 ;	is the same as the 6800 itself but offset 2 bytes because the trap
 ;	frame also contains Y so is 2 bytes bigger on an HC11
 ;
@@ -237,16 +236,15 @@ via_signal:
 	rti
 
 doexec:
-	tsx
-	ldx 2,x
+	xgdx				; execute address into x
 	sei
 	jsr map_process_always
 	lds udata+U_DATA__U_ISP
 	des				; offset by 1 on the 680X
 	clr udata+U_DATA__U_INSYS
 	cli
-	ldd PROGLOAD
-	jmp 0,x
+	ldd #PROGLOAD			; relocation info
+	jmp 0,x				; from the caller D
 
 trap_handler:
 	; Were we in kernel - if so die horribly
@@ -278,7 +276,7 @@ trap_illegal:
 trapx:
 	ldx #atmsg
 	jsr outcharhex
-	tex
+	tsx
 	ldx 8,x
 	jsr outx
 	ldx #nlmsg
@@ -313,12 +311,43 @@ interrupt_handler:
 	ldaa #1
 	staa udata+U_DATA__U_ININTERRUPT
 	staa inint
-	; Save the C direct page values so we can re-enter
-	; If we turn on register variables we will need to save them too
-	; TODO
+
+	; Save the C direct page values so we can re-enter along with the
+	; four register variables we use.
+	ldx _.tmp
+	pshx
+	ldx _.xy
+	pshx
+	ldx _.z
+	pshx
+
+	ldx _.d1
+	pshx
+	ldx _.d2
+	pshx
+	ldx _.d3
+	pshx
+	ldx _.d4
+	pshx
+
 	jsr platform_interrupt
-	; Restore the C direct page
-	; TODO
+
+	pulx
+	stx _.d4
+	pulx
+	stx _.d3
+	pulx
+	stx _.d2
+	pulx
+	stx _.d1
+
+	pulx
+	stx _.z
+	pulx
+	stx _.xy
+	pulx
+	stx _.tmp
+
 	tst udata+U_DATA__U_INSYS
 	bne iretk
 	clr inint
@@ -475,8 +504,8 @@ REG(_.d4)
 memcpy:
 	xgdy
 	tsx
-	ldd	5,x
-	ldx	3,x	; SRC = X, DST = Y
+	ldd	4,x
+	ldx	2,x	; SRC = X, DST = Y
 	cpd	#0
 	beq	End
 	pshy
@@ -502,12 +531,12 @@ End:
 
 ;;; D    = dst	Pmode
 ;;; 2,sp = src	SImode
-;;; 6,sp = size	HImode (size_t)
+;;; 4,sp = size
 memset:
 	xgdx
 	tsy
-	ldab	6,y
-	ldy	7,y		; DST = X, CNT = Y
+	ldab	3,y
+	ldy	4,y		; DST = X, CNT = Y
 	beq	L3
 	pshx
 L2:

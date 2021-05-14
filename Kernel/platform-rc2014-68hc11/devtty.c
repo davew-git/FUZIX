@@ -3,7 +3,6 @@
 #include <printf.h>
 #include <stdbool.h>
 #include <devtty.h>
-#include <device.h>
 #include <vt.h>
 #include <tty.h>
 
@@ -34,15 +33,15 @@ void kputchar(uint8_t c)
 
 ttyready_t tty_writeready(uint8_t minor)
 {
-	/* Console is the 6803 onboard port */
-	if (cpuio[0x11] & 0x20)
+	/* Console is the 68HC11 onboard port */
+	if (cpuio[0x2E] & 0x80)
 		return TTY_READY_NOW;
 	return TTY_READY_SOON;
 }
 
 void tty_putc(uint8_t minor, unsigned char c)
 {
-	while(!(cpuio[0x2E] & 0x20));	/* Hack FIXME */
+	while(!(cpuio[0x2E] & 0x80));	/* Hack FIXME */
 	cpuio[0x2F] = c;
 }
 
@@ -72,7 +71,6 @@ void tty_setup(uint8_t minor, uint8_t flag)
 {
 	struct termios *t = &ttydata[minor].termios;
 	uint8_t baud = t->c_cflag & CBAUD;
-	uint8_t sccr1;
 	/* Our base rate is 115200 with SCP 0 */
 	if ((baud = baudtable[baud]) == 0xFF) {
 		t->c_cflag &= ~CBAUD;
@@ -80,6 +78,7 @@ void tty_setup(uint8_t minor, uint8_t flag)
 		baud = 0x12;
 	}
 	cpuio[0x2B] = baud;
+	cpuio[0x2D] = 0x2C;	/* rx interrupt on, tx and rx on */
 }
 
 void tty_sleeping(uint8_t minor)
@@ -99,6 +98,6 @@ void tty_data_consumed(uint8_t minor)
 
 void tty_poll(void)
 {
-	if (cpuio[0x2E] & 0x80)
+	if (cpuio[0x2E] & 0x20)
 		tty_inproc(1, cpuio[0x2F]);
 }
