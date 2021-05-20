@@ -1,8 +1,9 @@
 ;
-;	Initial 68HC11 crt0. We need to add self relocation etc to it
+;	Relocating 68HC11 crt0
 ;
 
 	.text
+	.mode mshort
 
 	.globl environ
 
@@ -10,7 +11,7 @@ head:
 	.word	0x80A8
 	.byte	2		;	6800 series
 	.byte	4		;	Needs 68HC11 features
-	.byte   1 		;	Load page (FIXME hardcoded)
+	.byte   0 		;	Load page (relocatable)
 	.byte	0		;	No hints
 	.word	__code_end-0x100	;	code_size
 	.word	__data_size	;	data_size
@@ -18,9 +19,10 @@ head:
 	.byte	__start-head	;	Offset to execute from
 	.byte	0		;	No size hint
 	.byte	0		;	No stack hint
-	.byte	0		;	No hint bits
+	.byte	0		;	DP size (filled in later)
 
 	.word   __sighandler	;	Signals
+	.word	0		;	Relocation pointer to be
 
 ;
 ;	This function is called when we need to deliver a signal. We can't
@@ -74,12 +76,68 @@ __sighandler:
 	stx	*_.tmp
 	rts		; to the return provided by the kernel
 
+
+relnext:
+	iny
+reloc:	ldab	,y
+	beq	done
+	clr	,y
+	cmpb	#0xff
+	bne	relone
+	; 0xFF means move on 0xFE bytes and don't do a relocation but
+	; read a further relocation byte
+	decb
+	abx
+	bra	relnext
+relone:
+	; 0x01-0xFE means move on that many bytes and then relocate that
+	; byte
+	abx
+	tab
+	addb	,x
+	stab	,x
+	bra	relnext
+done:
+	rts
+
 ;
 ;	4(sp)+	environ
 ;	2(sp)	argv
 ;	0(sp)	argc
+;
+;	A = base of executable (high)
+;	B = base of direct page for user usage
+;	X/Y undefined
+;
+;	Some trickery is required to do this without using DP and entirely
+;	relocatably on an HC11.
+;	
 __start:
-	jsr	__stdio_init_vars
+	psha	; save high byte of base address for second relocation set 
+	pshb	; save DP relocation for the moment
+	psha	; save high byte of base address again 
+	clrb	; D is now the base address
+	xgdx	; X is now the base address so we can use it for PC relative
+	ldaa	18,x	; relocation table base into Y
+	; We have to relocate this ourselves
+	pulb	; get high byte of base address back
+	aba
+	ldab	19,x	; low byte does not need relocating
+	xgdy	; Y now holds the relocation table pointer
+	pula	; Recover the DP relocation value
+	pshx	; save base
+	bsr	reloc
+	pulx	; restore base
+	pula	; recover high byte of base copy (for second reloc run)
+	iny	; Past the end marker
+	bsr	reloc
+	ldd	#__common_end	; by now relocated
+	jsr	brk	; fix the brk base if it changed for relocations
+
+	;
+	;	And into the main flow
+	;
+
 	tsx
 	ldab	#4
 	abx

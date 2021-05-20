@@ -21,6 +21,8 @@
 	.globl outy
 	.globl outd
 
+	.globl preemption		; for debugging
+
 #include "platform/kernel.def"
 #include "kernel-hc11.def"
 
@@ -127,18 +129,22 @@ deliver_signals:
 signal_raced:
 	rts
 deliver_signals_2:
+	clr udata+U_DATA__U_CURSIG
 	tab
-	ldy #udata+U_DATA__U_SIGVEC
-	aby
-	aby
-	ldy 0,y
+	ldx #udata+U_DATA__U_SIGVEC
+	abx
+	abx
+	ldy 0,x
 	beq signal_raced
+	clr 0,x
+	clr 1,x
 	tab
 	clra
-	ldx #signal_return
-	pshx
-	ldx PROGLOAD+18		; FIXME assumes binary at base address
+	ldx PROGLOAD+16		; FIXME assumes binary at base address
+	; Stack the vector as well, needed for running 680x binaries
+	pshy
 	jsr ,x
+	pulx			; discard vector
 signal_return:
 	sei
 	sts udata+U_DATA__U_SYSCALL_SP
@@ -228,7 +234,7 @@ syscall_main:
 	staa 2,x
 	ldd udata+U_DATA__U_ERROR
 	std 3,x				; error in X
-	tst udata+U_DATA__U_CURSIG
+	ldaa udata+U_DATA__U_CURSIG
 	bne via_signal
 	rti
 via_signal:
@@ -243,7 +249,7 @@ doexec:
 	des				; offset by 1 on the 680X
 	clr udata+U_DATA__U_INSYS
 	cli
-	ldd #PROGLOAD			; relocation info
+	ldd #PROGLOAD+DPBASE		; relocation info
 	jmp 0,x				; from the caller D
 
 trap_handler:
@@ -261,7 +267,7 @@ trap_handler:
 	ldx P_TAB__P_PID_OFFSET,x
 	pshx				; expected hole
 	pshx				; arg
-	ldd #3980			; kill, 68hc11 style call
+	ldd #0x3980			; kill, 68hc11 style call
 	swi				; send ourselves a SIGILL
 	rti				; and if we come back just
 					; drop back to the expected frame
@@ -300,64 +306,88 @@ nmimsg:
 nlmsg:
 	.byte 13,10,0
 
+
+;
+;	Call C code at Y from asm wrappers in an interrupt
+;	Preserves D into the C code, and out of it
+;
+call_c_irq:
+	; Save the C direct page values so we can re-enter along with the
+	; four register variables we use.
+	ldx *_.tmp
+	pshx
+	ldx *_.xy
+	pshx
+	ldx *_.z
+	pshx
+
+	ldx *_.d1
+	pshx
+	ldx *_.d2
+	pshx
+	ldx *_.d3
+	pshx
+	ldx *_.d4
+	pshx
+
+	jsr ,y
+
+	pulx
+	stx *_.d4
+	pulx
+	stx *_.d3
+	pulx
+	stx *_.d2
+	pulx
+	stx *_.d1
+
+	pulx
+	stx *_.z
+	pulx
+	stx *_.xy
+	pulx
+	stx *_.tmp
+	rts
+
 ;
 ;	The trap saved our entire register state for us
 ;
+;	At this point our user stack has the RTI frame on it, and the
+;	interrupt stack is clear
 interrupt_handler:
 	sts istack_switched_sp
+
+	; Switch to the interrupt stack
 	lds #istack_top
+
 	jsr map_save_kernel
 
 	ldaa #1
 	staa udata+U_DATA__U_ININTERRUPT
 	staa inint
 
-	; Save the C direct page values so we can re-enter along with the
-	; four register variables we use.
-	ldx _.tmp
-	pshx
-	ldx _.xy
-	pshx
-	ldx _.z
-	pshx
+	; Call the C code to process the interrupt
+	ldy #platform_interrupt
+	jsr call_c_irq
 
-	ldx _.d1
-	pshx
-	ldx _.d2
-	pshx
-	ldx _.d3
-	pshx
-	ldx _.d4
-	pshx
-
-	jsr platform_interrupt
-
-	pulx
-	stx _.d4
-	pulx
-	stx _.d3
-	pulx
-	stx _.d2
-	pulx
-	stx _.d1
-
-	pulx
-	stx _.z
-	pulx
-	stx _.xy
-	pulx
-	stx _.tmp
-
+	; Was the interrupt to kernel code ?
 	tst udata+U_DATA__U_INSYS
 	bne iretk
+
+	; Interrupts from user code may pre-empt
 	clr inint
 	tst need_resched
 	bne preemption
+
+	; No pre-emption - map the process back
 	jsr map_process_always
+	; Switch back to our kernel stack with the RTI frame
 	lds istack_switched_sp
+	; Clean up
 	clr udata+U_DATA__U_ININTERRUPT
 	tst udata+U_DATA__U_INSYS
 	bne no_signals
+	; Signals are delivered off interrupts too
 	jsr deliver_signals
 no_signals:
 	rti
@@ -372,32 +402,51 @@ iretk:
 	tst udata+U_DATA__U_INSYS
 	rti
 
-
+;
+;	We enter the pre-emption code with our RTI frame on the user stack
+;	and running on the interrupt stack
+;
 preemption:
 	clr need_resched
-	; Save the stack pointer across
+	; Save the stack pointer across as istack_switched_sp is not per
+	; task
 	ldd istack_switched_sp
 	std udata+U_DATA__U_SYSCALL_SP
+	; Switch to our own process kernel stack while switched (the
+	; interrupt stack will be used by other things in the meantime).
 	lds #kstack_top
 	ldab #1
 	stab udata+U_DATA__U_INSYS
-	jsr chksigs
+
+	; Signal check
+	ldy #chksigs
+	jsr call_c_irq
+
 	ldx udata+U_DATA__U_PTAB
 	ldab P_TAB__P_STATUS_OFFSET,x
 	cmpb #P_RUNNING
 	bne not_running
+	; Move from running to ready state
 	ldab #P_READY
 	stab P_TAB__P_STATUS_OFFSET,x
-	bset P_TAB__P_FLAGS_OFFSET,x,#PFL_BATCH
+	; If we are running set the punishment flag for CPU hogs
+	bset P_TAB__P_FLAGS_OFFSET,x #PFL_BATCH
 not_running:
+	; Task switch
 	jsr platform_switchout
+	; Time will pass, things will run and eventually we will reappear
+	; here when we get rescheduled
 	clr udata+U_DATA__U_ININTERRUPT
 	clr udata+U_DATA__U_INSYS
+	; Map back in
 	jsr map_process_always
+	; Return to our user stack
 	lds udata+U_DATA__U_SYSCALL_SP
+	; Check for signals
 	ldaa udata+U_DATA__U_CURSIG
 	beq no_signals
 	jsr deliver_signals_2
+	; The RTI frame is top of our user stack
 	rti
 
 	.section .text
